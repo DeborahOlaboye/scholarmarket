@@ -458,6 +458,35 @@ pub struct SeatAssignedEvent {
     pub remaining_seats: u32,
 }
 
+/// Event: material.purchased (comprehensive purchase event)
+#[contractevent(topics = ["material", "purchased"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MaterialPurchasedEvent {
+    #[topic]
+    pub purchase_id: u64,
+    #[topic]
+    pub material_id: BytesN<32>,
+    #[topic]
+    pub buyer: Address,
+    pub seller: Address,
+    pub asset: Address,
+    pub amount: i128,
+    pub seat_count: u32,
+}
+
+/// Event: entitlement.revoked
+#[contractevent(topics = ["entitlement", "revoked"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EntitlementRevokedEvent {
+    #[topic]
+    pub material_id: BytesN<32>,
+    #[topic]
+    pub buyer: Address,
+    #[topic]
+    pub purchase_id: u64,
+    pub reason: Symbol,
+}
+
 /// The PurchaseManager contract
 #[contract]
 pub struct PurchaseManager;
@@ -749,6 +778,17 @@ impl PurchaseManager {
         }
         .publish(&env);
 
+        MaterialPurchasedEvent {
+            purchase_id,
+            material_id: material_id.clone(),
+            buyer: buyer.clone(),
+            seller: material.creator.clone(),
+            asset: asset.clone(),
+            amount: gross,
+            seat_count,
+        }
+        .publish(&env);
+
         Ok(purchase_id)
     }
 
@@ -760,6 +800,11 @@ impl PurchaseManager {
         assignee: Address,
     ) -> Result<(), PurchaseError> {
         purchaser.require_auth();
+
+        let config = get_platform_config(&env)?;
+        if config.paused {
+            return Err(PurchaseError::ContractPaused);
+        }
 
         if purchaser == assignee {
             return Err(PurchaseError::CannotAssignToSelf);
@@ -886,6 +931,11 @@ impl PurchaseManager {
     ) -> Result<(), PurchaseError> {
         caller.require_auth();
 
+        let config = get_platform_config(&env)?;
+        if config.paused {
+            return Err(PurchaseError::ContractPaused);
+        }
+
         let mut escrow =
             get_escrow_record_internal(&env, purchase_id).ok_or(PurchaseError::MaterialNotFound)?;
 
@@ -987,6 +1037,11 @@ impl PurchaseManager {
         reason: Bytes,
     ) -> Result<(), PurchaseError> {
         buyer.require_auth();
+
+        let config = get_platform_config(&env)?;
+        if config.paused {
+            return Err(PurchaseError::ContractPaused);
+        }
 
         // Validate reason is not empty
         if reason.len() == 0 {
@@ -1131,6 +1186,14 @@ impl PurchaseManager {
                     env.storage()
                         .persistent()
                         .set(&entitlement_key, &entitlement);
+
+                    EntitlementRevokedEvent {
+                        material_id: escrow.material_id.clone(),
+                        buyer: dispute.opener.clone(),
+                        purchase_id,
+                        reason: Symbol::new(&env, "dispute_refund"),
+                    }
+                    .publish(&env);
                 }
 
                 // Update settlement to Refunded
@@ -1287,6 +1350,14 @@ impl PurchaseManager {
             .persistent()
             .set(&entitlement_key, &entitlement);
 
+        EntitlementRevokedEvent {
+            material_id: escrow.material_id.clone(),
+            buyer: buyer.clone(),
+            purchase_id,
+            reason: Symbol::new(&env, "admin_refund"),
+        }
+        .publish(&env);
+
         // Update settlement to Refunded
         settlement.state = SettlementState::Refunded;
         settlement.resolved_ledger = Some(current_ledger);
@@ -1375,6 +1446,14 @@ impl PurchaseManager {
             .persistent()
             .set(&entitlement_key, &entitlement);
 
+        EntitlementRevokedEvent {
+            material_id: escrow.material_id.clone(),
+            buyer: buyer.clone(),
+            purchase_id,
+            reason: Symbol::new(&env, "admin_refund_to_buyer"),
+        }
+        .publish(&env);
+
         // Update settlement to Refunded
         settlement.state = SettlementState::Refunded;
         settlement.resolved_ledger = Some(current_ledger);
@@ -1462,6 +1541,14 @@ impl PurchaseManager {
         env.storage()
             .persistent()
             .set(&entitlement_key, &entitlement);
+
+        EntitlementRevokedEvent {
+            material_id: escrow.material_id.clone(),
+            buyer: buyer.clone(),
+            purchase_id,
+            reason: Symbol::new(&env, "process_refund"),
+        }
+        .publish(&env);
 
         settlement.state = SettlementState::Refunded;
         settlement.resolved_ledger = Some(current_ledger);
